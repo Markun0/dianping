@@ -9,8 +9,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 import java.util.function.Function;
 
-import static com.hmdp.utils.RedisConstants.CACHE_NULL_TTL;
-import static com.hmdp.utils.RedisConstants.CACHE_SHOP_TTL;
+import static com.hmdp.utils.RedisConstants.*;
 
 @Component
 public class RedisUtil {
@@ -56,8 +55,8 @@ public class RedisUtil {
      * @param key 键
      * @return 值
      */
-    public Object get(String key) {
-        return key == null ? null : redisTemplate.opsForValue().get(key);
+    public String get(String key) {
+        return redisTemplate.opsForValue().get(key);
     }
 
     /**
@@ -66,9 +65,9 @@ public class RedisUtil {
      * @param value 值
      * @return true成功 false失败
      */
-    public boolean set(String key, Object value) {
+    public boolean set(String key, String value) {
         try {
-            redisTemplate.opsForValue().set(key, JSONUtil.toJsonStr(value));
+            redisTemplate.opsForValue().set(key, value);
             return true;
         } catch (Exception e) {
             e.printStackTrace();
@@ -84,11 +83,11 @@ public class RedisUtil {
      * @param time 时间(秒) time要大于0 如果time小于等于0 将设置无限期
      * @return true成功 false 失败
      */
-    public boolean set(String key, Object value, long time) {
+    public boolean set(String key, String value, long time) {
 
         try {
             if (time > 0) {
-                redisTemplate.opsForValue().set(key, JSONUtil.toJsonStr(value), time, TimeUnit.MINUTES);
+                redisTemplate.opsForValue().set(key, value, time, TimeUnit.MINUTES);
             } else {
                 set(key, value);
             }
@@ -100,27 +99,53 @@ public class RedisUtil {
     }
 
     // 对数据库内容的缓存， 缓存的是方法的返回值
-    public <R, ID> R getCache(String keyPrefix, ID id, Function<ID, R> dbFallback) {
-        String key = keyPrefix + id.toString();
+    public <R, ID> String getCache(String keyPrefix, ID id, Function<ID, R> dbFallback) {
+        String key = keyPrefix + id;
         // 从redis中查询缓存
-        R r = (R) get(key);
+        String r = get(key);
         // 判断是否存在
         if (r!= null) {
             // 存在，直接返回
             return r;
         }
-        // 不存在，调用方法，查询数据库
-        R apply = dbFallback.apply(id);
-        // 不存在，返回错误结果
-        if (apply == null) {
-            set(key, "", CACHE_NULL_TTL);
-            return null;
+        String lockKey =  LOCK_SHOP_KEY + id;
+        String apply;
+        try {
+            // 不存在，获取互斥锁
+            boolean isLock = trylock(lockKey);
+            if (isLock) {
+                // 休眠
+                Thread.sleep(50);
+                return getCache(keyPrefix, id, dbFallback);
+            }
+            // 调用方法，查询数据库
+            apply = JSONUtil.toJsonStr(dbFallback.apply(id));
+            // 不存在，返回错误结果
+            if (apply == null) {
+                set(key, "", CACHE_NULL_TTL);
+                return null;
+            }
+            set(key, apply, CACHE_SHOP_TTL);
+        } catch (InterruptedException e) {
+            throw new RuntimeException(e);
+        } finally {
+            // 释放锁
+            unlock(lockKey);
         }
-        set(key, apply,CACHE_SHOP_TTL);
         return apply;
     }
 
+    // 尝试获取互斥锁
+    public boolean trylock(String key){
+        // 利用setnx命令，设置一个互斥锁，防止缓存击穿
+        Boolean aBoolean = redisTemplate.opsForValue().setIfAbsent(key, "1", LOCK_SHOP_TTL, TimeUnit.SECONDS);
+        return Boolean.FALSE.equals(aBoolean);
+    }
 
+    // 释放锁
+    public void unlock(String key){
+        redisTemplate.delete(key);
+    }
     // 更新数据库，删除缓存，事务级
     @Transactional(rollbackFor = Exception.class)
     public <ID, R> void updateCache(String keyPrefix, ID id, R r, Consumer<R> db) {

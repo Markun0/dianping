@@ -9,6 +9,7 @@ import com.hmdp.entity.Shop;
 import com.hmdp.service.IShopService;
 import com.hmdp.utils.RedisUtil;
 import com.hmdp.utils.SystemConstants;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.bind.annotation.*;
 
@@ -26,6 +27,7 @@ import static com.hmdp.utils.RedisConstants.CACHE_SHOP_KEY;
  */
 @RestController
 @RequestMapping("/shop")
+@Slf4j
 public class ShopController {
 
     @Resource
@@ -40,9 +42,9 @@ public class ShopController {
      */
     @GetMapping("/{id}")
     public Result queryShopById(@PathVariable("id") Long id) {
-        Object shopJson = redisUtil.getCache(CACHE_SHOP_KEY, id, iid -> shopService.getById(iid));
-        if (shopJson != null && !shopJson.toString().isEmpty()) {
-            Shop shop = JSONUtil.toBean(shopJson.toString(), Shop.class);
+        String shopJson = redisUtil.getCache(CACHE_SHOP_KEY, id, iid -> shopService.getById(iid));
+        if (shopJson != null && !shopJson.isEmpty()) {
+            Shop shop = JSONUtil.toBean(shopJson, Shop.class);
             return Result.ok(shop);
         }
         return Result.fail("店铺不存在");

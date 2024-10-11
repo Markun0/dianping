@@ -2,14 +2,19 @@ package com.hmdp.controller;
 
 
 import cn.hutool.core.util.StrUtil;
+import cn.hutool.json.JSONUtil;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.hmdp.dto.Result;
 import com.hmdp.entity.Shop;
 import com.hmdp.service.IShopService;
+import com.hmdp.utils.RedisUtil;
 import com.hmdp.utils.SystemConstants;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.bind.annotation.*;
 
 import javax.annotation.Resource;
+
+import static com.hmdp.utils.RedisConstants.CACHE_SHOP_KEY;
 
 /**
  * <p>
@@ -25,6 +30,8 @@ public class ShopController {
 
     @Resource
     public IShopService shopService;
+    @Autowired
+    RedisUtil redisUtil;
 
     /**
      * 根据id查询商铺信息
@@ -33,7 +40,12 @@ public class ShopController {
      */
     @GetMapping("/{id}")
     public Result queryShopById(@PathVariable("id") Long id) {
-        return Result.ok(shopService.getById(id));
+        Object shopJson = redisUtil.getCache(CACHE_SHOP_KEY, id, iid -> shopService.getById(iid));
+        if (shopJson != null && !shopJson.toString().isEmpty()) {
+            Shop shop = JSONUtil.toBean(shopJson.toString(), Shop.class);
+            return Result.ok(shop);
+        }
+        return Result.fail("店铺不存在");
     }
 
     /**
@@ -57,7 +69,9 @@ public class ShopController {
     @PutMapping
     public Result updateShop(@RequestBody Shop shop) {
         // 写入数据库
-        shopService.updateById(shop);
+//        shopService.updateById(shop);
+        Long id = shop.getId();
+        redisUtil.updateCache(CACHE_SHOP_KEY, id, shop, sshop -> shopService.updateById(sshop));
         return Result.ok();
     }
 

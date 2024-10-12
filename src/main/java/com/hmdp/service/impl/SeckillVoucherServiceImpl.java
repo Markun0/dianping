@@ -9,6 +9,7 @@ import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.hmdp.service.IVoucherOrderService;
 import com.hmdp.utils.RedisWorker;
 import com.hmdp.utils.UserHolder;
+import org.springframework.aop.framework.AopContext;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -32,15 +33,10 @@ public class SeckillVoucherServiceImpl extends ServiceImpl<SeckillVoucherMapper,
      private RedisWorker redisWorker;
 
     @Override
-    @Transactional(rollbackFor = Exception.class)
     public Result seckillVoucher(Long voucherId) {
         // 1. 查询优惠卷
         SeckillVoucher voucher = getById(voucherId);
-        // 2. 判断优惠卷是否存在
-        if (voucher == null) {
-            return Result.fail("优惠卷不存在");
-        }
-        // 3. 判断优惠卷的秒杀是否开始或结束、库存是否充足
+        // 2. 判断优惠卷的秒杀是否开始或结束、库存是否充足
         Integer stock = voucher.getStock();
         if (voucher.getBeginTime().isAfter(LocalDateTime.now()) || stock < 1 || voucher.getEndTime().isBefore(LocalDateTime.now())) {
             if(voucher.getBeginTime().isAfter(LocalDateTime.now()))
@@ -50,9 +46,23 @@ public class SeckillVoucherServiceImpl extends ServiceImpl<SeckillVoucherMapper,
             else
                 return Result.fail("库存不足");
         }
+        synchronized (UserHolder.getUser().toString().intern()) {
+            // 获取代理对象（事务）
+            ISeckillVoucherService proxy = (ISeckillVoucherService) AopContext.currentProxy();
+            return Result.ok(proxy.createVoucherOrder(voucherId));
+        }
+    }
+
+    @Transactional
+    public Result createVoucherOrder(Long voucherId) {
+        // 3. 根据用户id和优惠卷id查询订单
+        Long userId = UserHolder.getUser().getId();
+        int count = voucherOrderService.query().eq("voucher_id", voucherId).eq("user_id", userId).count();
+        if (count > 0)
+            return Result.fail("一人一单");
         // 4.扣减库存, 乐观锁解决超卖
-        boolean success = update().setSql("stock = stock - 1").eq("voucher_id", voucherId).eq("stock", stock).update();
-        if(!success){
+        boolean success = update().setSql("stock = stock - 1").eq("voucher_id", voucherId).gt("stock", 0).update();
+        if (!success) {
             // 扣减失败
             return Result.fail("下单失败");
         }
@@ -64,7 +74,7 @@ public class SeckillVoucherServiceImpl extends ServiceImpl<SeckillVoucherMapper,
         // 5.2 代金卷id
         order.setVoucherId(voucherId);
         // 5.3 用户id
-        order.setUserId(UserHolder.getUser().getId());
+        order.setUserId(userId);
         voucherOrderService.save(order);
         // 6. 返回订单id
         return Result.ok(orderId);

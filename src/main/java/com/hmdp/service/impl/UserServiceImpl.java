@@ -42,18 +42,15 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements IU
 
     @Resource
     private StringRedisTemplate stringRedisTemplate;
-    @Autowired
-    private UserMapper userMapper;
 
 
     @Override
     public Result sendCode(String phone, HttpSession session) {
         // 1. 校验手机号
         RegexUtils.isCodeInvalid(phone);
+
         // 2. 生成验证码
         String code = RandomUtil.randomNumbers(6);
-//        // 3. 保存验证码到session
-//        session.setAttribute("code", code);
         // 3. 保存验证码到redis
         stringRedisTemplate.opsForValue().set(LOGIN_CODE_KEY + phone, code, LOGIN_CODE_TTL, TimeUnit.MINUTES);
         // TODO 发送验证码
@@ -71,13 +68,39 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements IU
         if(!loginForm.getCode().equals(stringRedisTemplate.opsForValue().get(LOGIN_CODE_KEY + phone))){
             return Result.fail("验证码有误");
         }
+
+        // 判断是否需要限制登陆
+        // 最近1分钟内有登陆
+        if(stringRedisTemplate.opsForZSet().count(SENDCODE_SENDTIME_KEY + phone, System.currentTimeMillis() - 60 * 1000, System.currentTimeMillis()) > 0){
+            return Result.fail("距离上次发送时间不足1分钟，请1分钟后重试");
+        }
+        // 判断是否被限制登陆
+        String r = stringRedisTemplate.opsForValue().get(LEVEL_LIMIT + phone);
+        if(r != null) {
+            if (r.equals("1")) {
+                return Result.fail("5分钟内已经尝试了5次，接下来如需再发送请等待5分钟后重试");
+            }
+
+            if (r.equals("2")) {
+                return Result.fail("接下来如需再尝试，请等待1小时后再请求");
+            }
+        }
+        // 检查发送登陆请求的次数
+        if(stringRedisTemplate.opsForZSet().count(SENDCODE_SENDTIME_KEY + phone, System.currentTimeMillis() - 5 * 60 * 1000, System.currentTimeMillis()) >= 10){
+            stringRedisTemplate.opsForValue().set(LEVEL_LIMIT + phone, "1", 5, TimeUnit.MINUTES);
+        }
+        else if(stringRedisTemplate.opsForZSet().count(SENDCODE_SENDTIME_KEY + phone, System.currentTimeMillis() - 2 * 60 * 60 * 1000, System.currentTimeMillis()) >= 5){
+            stringRedisTemplate.opsForValue().set(LEVEL_LIMIT + phone, "2", 1, TimeUnit.HOURS);
+        }
+
+        // 记录验证码发送
+        stringRedisTemplate.opsForZSet().add(SENDCODE_SENDTIME_KEY + phone, System.currentTimeMillis() + "", System.currentTimeMillis());
+
         // 3. 根据手机号查询用户
         User user = query().eq("phone", phone).one();
         if(user == null) {
             // 创建新用户
             user = createUserWithPhone(phone);
-            // 保存到数据库
-            save(user);
         }
 //        // 保存用户到session
 //        session.setAttribute("user", BeanUtil.copyProperties(user, UserDTO.class));
